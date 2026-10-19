@@ -74,7 +74,48 @@ def load_latest_data() -> tuple[pd.DataFrame, int]:
 
 
 # ------------------------------------------------------------------
-# 3. 인구 피라미드 그래프 만들기
+# 3. 지표 계산 (평균연령, 고령화율, 한 줄 설명)
+# ------------------------------------------------------------------
+
+# 나이 숫자 목록: 0, 1, ... 100 (AGE_LABELS와 같은 순서, 마지막 100은 '100세 이상'을 뜻해요)
+AGES = list(range(101))
+
+AGING_WARNING_LIMIT = 20  # 고령화율이 이 값(%)을 넘으면 주의 표시를 붙여요
+
+
+def calc_stats(male: list, female: list):
+    """총인구·평균연령·고령화율·어린이 비율을 계산해요. 인구가 0명이면 None을 돌려줘요."""
+    # 나이별 인구 = 남자 + 여자
+    people = [m + f for m, f in zip(male, female)]
+    total = sum(people)
+    if total <= 0:
+        return None
+
+    # 평균연령 = (나이 × 그 나이 인구)를 모두 더한 값 ÷ 총인구
+    # ('100세 이상'은 100세로 계산하므로 실제보다 아주 조금 낮게 나올 수 있어요)
+    avg_age = sum(a * p for a, p in zip(AGES, people)) / total
+
+    # 고령화율 = 65세 이상 인구 ÷ 총인구 × 100
+    aged_pct = sum(people[65:]) / total * 100
+    # 어린이(0~14세) 비율도 구해둬요 (한 줄 설명에 써요)
+    child_pct = sum(people[:15]) / total * 100
+
+    return {"total": int(total), "avg_age": avg_age, "aged_pct": aged_pct, "child_pct": child_pct}
+
+
+def make_description(child_pct: float, aged_pct: float) -> str:
+    """어린이(0~14세) 비율과 어르신(65세 이상) 비율을 비교해서 한 줄 설명을 만들어요."""
+    gap = child_pct - aged_pct  # 양수면 어린이가 더 많고, 음수면 어르신이 더 많아요
+    numbers = f"(어린이 0~14세 {child_pct:.1f}% · 어르신 65세 이상 {aged_pct:.1f}%)"
+    if gap >= 3:
+        return f"👶 이 동네는 아이들이 어르신보다 많은 편이에요. {numbers}"
+    if gap <= -3:
+        return f"🌳 이 동네는 아이들보다 어르신이 많은 편이에요. {numbers}"
+    return f"🏡 이 동네는 아이들과 어르신이 비슷하게 어우러져 있어요. {numbers}"
+
+
+# ------------------------------------------------------------------
+# 4. 인구 피라미드 그래프 만들기
 # ------------------------------------------------------------------
 
 def make_pyramid(male: list, female: list, title: str) -> go.Figure:
@@ -137,7 +178,7 @@ def make_pyramid(male: list, female: list, title: str) -> go.Figure:
 
 
 # ------------------------------------------------------------------
-# 4. 화면 구성
+# 5. 화면 구성
 # ------------------------------------------------------------------
 
 st.title("🏘️ 동네별 인구 피라미드")
@@ -174,13 +215,31 @@ picked = data[(data["시도"] == sido) & (data["시군구"] == sigungu) & (data[
 male_values = [float(picked[f"남_{a}"].sum()) for a in AGE_LABELS]
 female_values = [float(picked[f"여_{a}"].sum()) for a in AGE_LABELS]
 
-# 총인구 요약
-m_total, f_total = int(sum(male_values)), int(sum(female_values))
-c1, c2, c3 = st.columns(3)
-c1.metric("총인구", f"{m_total + f_total:,}명")
-c2.metric("남자", f"{m_total:,}명")
-c3.metric("여자", f"{f_total:,}명")
+# 지표 계산 (인구가 0명인 동네는 stats가 None이에요)
+stats = calc_stats(male_values, female_values)
+
+# 지표 카드 3개를 나란히 놓아요. 네 번째 칸은 '주의 표시'가 들어갈 자리예요.
+card1, card2, card3, notice = st.columns([3, 3, 3, 2])
+
+if stats is None:
+    card1.metric("총인구", "0명")
+    card2.metric("평균연령", "-")
+    card3.metric("고령화율 (65세 이상)", "-")
+else:
+    card1.metric("총인구", f"{stats['total']:,}명")
+    card2.metric("평균연령", f"{stats['avg_age']:.1f}세")
+    card3.metric("고령화율 (65세 이상)", f"{stats['aged_pct']:.1f}%")
+
+    # 고령화율이 20%를 넘으면 고령화율 카드 옆에 주의 표시를 붙여요
+    if stats["aged_pct"] > AGING_WARNING_LIMIT:
+        notice.warning(f"⚠️ 주의\n\n고령화율 {AGING_WARNING_LIMIT}% 초과")
 
 # 그래프 그리기
 fig = make_pyramid(male_values, female_values, f"{sido} {sigungu} {dong} 인구 피라미드 ({latest_year}년)")
 st.plotly_chart(fig, use_container_width=True)
+
+# 피라미드 아래 한 줄 설명
+if stats is None:
+    st.info("이 동네는 인구 정보가 없어서 설명을 드리기 어려워요.")
+else:
+    st.info(make_description(stats["child_pct"], stats["aged_pct"]))
